@@ -1,4 +1,5 @@
 import asyncio
+import cv2
 import math
 
 from frame_sdk import Frame
@@ -27,48 +28,79 @@ async def main():
 
 async def check_camera_feed():
     f = Frame()
-    f.ensure_connected()
+    try:
+        await f.ensure_connected()
+    except Exception as e:
+        print(f"An error occurred while connecting to the Frame: {e}")
+        await f.ensure_connected()
+
     print(f"Connected: {f.bluetooth.is_connected()}")
+
+    running = True  # Variable to control photo capture loop
+
+    def stop_on_tap():
+        """Callback to stop capturing photos when a tap is detected."""
+        nonlocal running
+        running = False
 
     try:
         images = []
         results = []
-        await f.display.write_text("Tap to start the camera feed test", align=Alignment.BOTTOM_CENTER)
-        await f.motion.wait_for_tap()
-        for i in range(50):  # Capture 50 photos for the test
+        #await f.display.show_text("Tap to start capturing photos", align=Alignment.BOTTOM_CENTER)
+        #await f.motion.wait_for_tap()
+        await f.display.write_text("Capturing… Tap to stop", align=Alignment.BOTTOM_CENTER)
+        battery_level = await f.get_battery_level()
+        # Register the tap handler to stop photo capture using `run_on_tap`
+        # This sets up the callback to stop the loop when a tap is detected.
+        await f.motion.run_on_tap(callback=stop_on_tap)
+        print(f"Battery level: {battery_level}%")
+        await f.display.write_text(f"Battery level: {battery_level}%", align=Alignment.TOP_RIGHT)
+        i = 0  # Counter for photos
+        while running:  # Keep capturing photos until the tap handler stops the loop
             photo_filename = f"test_photo_{i}.jpg"
             print(f"Capturing photo {i + 1}...")
+
             # Capture a photo and save it to disk
             await f.camera.save_photo(photo_filename, autofocus_seconds=1, quality=Quality.HIGH, autofocus_type=AutofocusType.CENTER_WEIGHTED)
             print(f"Photo {i + 1} saved as {photo_filename}")
-            # Load the photo from disk and display it
+
+            # Load the photo
             image = mp.Image.create_from_file(photo_filename)
-            # rotate the image to by 90 degrees counter-clockwise
-            recognition_result = recognizer.recognize(image)
-            # Display the recognition result
-            # Error handling in case the recognition result is empty
+
+            # Rotate the image by 90 degrees counter-clockwise (if needed)
+            recognition_result = recognizer.recognize(rotate_image(image, angle=90))
+
+            # Check if any gestures or hand landmarks are detected
             if not recognition_result.gestures:
                 print(f"No gestures detected in photo {i + 1}")
                 continue
-            
+
             if not recognition_result.hand_landmarks:
                 print(f"No hand landmarks detected in photo {i + 1}")
                 continue
+
             images.append(image)
             top_gesture = recognition_result.gestures[0][0]
             hand_landmarks = recognition_result.hand_landmarks
             results.append((top_gesture, hand_landmarks))
             print(f"Recognition result for photo {i + 1}: {top_gesture.category_name} ({top_gesture.score:.2f})")
-            await f.display.write_text(f"Gesture: {top_gesture.category_name} ({top_gesture.score:.2f})", align=Alignment.MIDDLE_CENTER)
-            # Add a small delay to simulate a consistent feed check
-            await asyncio.sleep(1)
+            await f.display.write_text(f"Gesture: {top_gesture.category_name} ({top_gesture.score:.2f})")
+
+            # Increment the photo counter
+            i += 1
+
+            # Add a small delay between captures
+            await asyncio.sleep(2)
+
+        # Once the user stops capturing photos, display the batch of images with results
         display_batch_of_images_with_gestures_and_hand_landmarks(images, results)
-        print("Camera feed test completed successfully!")
+        print("Photo capture session completed successfully!")
+
     except Exception as e:
-        print(f"An error occurred during the camera feed test: {e}")
+        print(f"An error occurred during the photo capture: {e}")
 
-    f.bluetooth.disconnect()
-
+    if f.bluetooth.is_connected():
+        await f.bluetooth.disconnect()
 
 def display_batch_of_images_with_gestures_and_hand_landmarks(images, results):
     """Displays a batch of images with the gesture category and its score along with the hand landmarks."""
@@ -123,6 +155,29 @@ def display_one_image(image, title, subplot, titlesize=16):
     if len(title) > 0:
         plt.title(title, fontsize=int(titlesize), color='black', fontdict={'verticalalignment':'center'}, pad=int(titlesize/1.5))
     return (subplot[0], subplot[1], subplot[2]+1)
+
+def rotate_image(image, angle):
+    """Rotates a given Mediapie image by a specified angle."""
+    # If the input image is in the form of a NumPy array, process it directly
+    if image is None:
+        raise ValueError("Input image is None. Please provide a valid image.")
+
+    # Get height and width of mediapipe image
+    h, w, _ = image.numpy_view().shape
+
+    # Compute the center of the image
+    center = (w // 2, h // 2)
+
+    # Create a rotation matrix
+    M = cv2.getRotationMatrix2D(center, angle, scale=1.0)
+
+    # Perform the rotation for mp.Image
+    rotated_image_np = cv2.warpAffine(image.numpy_view(), M, (w, h))
+
+    rotated_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rotated_image_np)
+
+    # Return the rotated image as a NumPy array
+    return rotated_image
 
 
 if __name__ == "__main__":
