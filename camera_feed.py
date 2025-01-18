@@ -48,13 +48,12 @@ async def check_camera_feed():
         results = []
         #await f.display.show_text("Tap to start capturing photos", align=Alignment.BOTTOM_CENTER)
         #await f.motion.wait_for_tap()
-        await f.display.write_text("Capturing… Tap to stop", align=Alignment.BOTTOM_CENTER)
         battery_level = await f.get_battery_level()
         # Register the tap handler to stop photo capture using `run_on_tap`
         # This sets up the callback to stop the loop when a tap is detected.
         await f.motion.run_on_tap(callback=stop_on_tap)
         print(f"Battery level: {battery_level}%")
-        await f.display.write_text(f"Battery level: {battery_level}%", align=Alignment.TOP_RIGHT)
+        await f.display.show_text(f"Battery level: {battery_level}%", align=Alignment.TOP_RIGHT)
         i = 0  # Counter for photos
         while running:  # Keep capturing photos until the tap handler stops the loop
             photo_filename = f"test_photo_{i}.jpg"
@@ -84,13 +83,13 @@ async def check_camera_feed():
             hand_landmarks = recognition_result.hand_landmarks
             results.append((top_gesture, hand_landmarks))
             print(f"Recognition result for photo {i + 1}: {top_gesture.category_name} ({top_gesture.score:.2f})")
-            await f.display.write_text(f"Gesture: {top_gesture.category_name} ({top_gesture.score:.2f})")
+            await f.display.show_text(f"Gesture: {top_gesture.category_name} ({top_gesture.score:.2f})")
 
             # Increment the photo counter
             i += 1
 
             # Add a small delay between captures
-            await asyncio.sleep(2)
+            await asyncio.sleep(0.1)
 
         # Once the user stops capturing photos, display the batch of images with results
         display_batch_of_images_with_gestures_and_hand_landmarks(images, results)
@@ -106,6 +105,9 @@ def display_batch_of_images_with_gestures_and_hand_landmarks(images, results):
     """Displays a batch of images with the gesture category and its score along with the hand landmarks."""
     # Images and labels.
     images = [image.numpy_view() for image in images]
+    # rotate images back to original orientation
+    images = [cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE) for image in images]
+    
     gestures = [top_gesture for (top_gesture, _) in results]
     multi_hand_landmarks_list = [multi_hand_landmarks for (_, multi_hand_landmarks) in results]
 
