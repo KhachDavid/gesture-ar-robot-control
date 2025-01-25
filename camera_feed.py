@@ -13,6 +13,7 @@ from mediapipe.framework.formats import landmark_pb2
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
+from ROS2Controller import ROS2Controller
 
 # Initialize mediapipe gesture recognition
 base_options = python.BaseOptions(model_asset_path='gesture_recognizer.task')
@@ -37,6 +38,7 @@ async def check_camera_feed():
     print(f"Connected: {f.bluetooth.is_connected()}")
 
     running = True  # Variable to control photo capture loop
+    ros_controller = ROS2Controller(workspace_path="~/unitree_ws")
 
     def stop_on_tap():
         """Callback to stop capturing photos when a tap is detected."""
@@ -44,6 +46,7 @@ async def check_camera_feed():
         running = False
 
     try:
+        #ros_controller.start_node("unitree_legged_real", "frames_open_palm")
         images = []
         results = []
         #await f.display.show_text("Tap to start capturing photos", align=Alignment.BOTTOM_CENTER)
@@ -83,8 +86,23 @@ async def check_camera_feed():
             hand_landmarks = recognition_result.hand_landmarks
             results.append((top_gesture, hand_landmarks))
             print(f"Recognition result for photo {i + 1}: {top_gesture.category_name} ({top_gesture.score:.2f})")
-            await f.display.show_text(f"Gesture: {top_gesture.category_name} ({top_gesture.score:.2f})")
 
+            if (top_gesture.category_name.lower() == "thumb_up"):
+                # invoke the robot to move up with ros2 run unitree_legged_real frames_open_palm
+                print("Thumbs up detected!")
+                await f.display.show_text("Thumbs up detected!")
+
+                # execute the robot movement using subprocess
+                #ros2_worker.start_ros2_node("unitree_legged_real", "frames_like")
+                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "thumb_up"}')
+
+            elif (top_gesture.category_name.lower() == "open_palm"):
+                print("Open palm detected!")
+                await f.display.show_text("Open palm detected!")
+                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "open_palm"}')
+                
+                # execute the robot movement using subprocess
+                #ros2_worker.start_ros2_node("unitree_legged_real", "frames_open_palm")
             # Increment the photo counter
             i += 1
 
@@ -92,10 +110,12 @@ async def check_camera_feed():
             await asyncio.sleep(0.1)
 
         # Once the user stops capturing photos, display the batch of images with results
+        #ros_controller.kill_node()
         display_batch_of_images_with_gestures_and_hand_landmarks(images, results)
         print("Photo capture session completed successfully!")
 
     except Exception as e:
+        #ros_controller.kill_node()
         print(f"An error occurred during the photo capture: {e}")
 
     if f.bluetooth.is_connected():
