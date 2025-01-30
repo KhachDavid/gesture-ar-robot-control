@@ -75,9 +75,16 @@ async def check_camera_feed():
             # Check if any gestures or hand landmarks are detected
             if not recognition_result.gestures:
                 print(f"No gestures detected in photo {i + 1}")
+                await f.display.show_text("Nothing detected!")
+                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
+
                 continue
 
             if not recognition_result.hand_landmarks:
+                print("Nothing Detected!")
+                await f.display.show_text("Nothing detected!")
+                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
+
                 print(f"No hand landmarks detected in photo {i + 1}")
                 continue
 
@@ -90,16 +97,47 @@ async def check_camera_feed():
             if (top_gesture.category_name.lower() == "thumb_up"):
                 # invoke the robot to move up with ros2 run unitree_legged_real frames_open_palm
                 print("Thumbs up detected!")
-                await f.display.show_text("Thumbs up detected!")
+                await f.display.show_text("Going up!")
+                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "up"}')
 
-                # execute the robot movement using subprocess
-                #ros2_worker.start_ros2_node("unitree_legged_real", "frames_like")
-                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "thumb_up"}')
+            elif (top_gesture.category_name.lower() == "thumb_down"):
+                # invoke the robot to move up with ros2 run unitree_legged_real frames_open_palm
+                print("Thumbs down detected!")
+                await f.display.show_text("Going to sleep!")
+                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "down"}')
+
+            elif (top_gesture.category_name.lower() == "pointing_up"):
+                # invoke the robot to move up with ros2 run unitree_legged_real frames_open_palm
+                print("Pointing up detected!")
+                await f.display.show_text("Going forward!")
+                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "forward"}')
+
+            elif (top_gesture.category_name.lower() == "victory"):
+                # invoke the robot to move up with ros2 run unitree_legged_real frames_open_palm
+                print("Victory detected!")
+                await f.display.show_text("Going back!")
+                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "back"}')
+
+            elif (top_gesture.category_name.lower() == "iloveyou"):
+                print("Open palm detected!")
+                await f.display.show_text("Going right!")
+                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "right"}')
 
             elif (top_gesture.category_name.lower() == "open_palm"):
                 print("Open palm detected!")
-                await f.display.show_text("Open palm detected!")
-                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "open_palm"}')
+                await f.display.show_text("Going left!")
+                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "left"}')
+            
+            elif (top_gesture.category_name.lower() == "closed_fist"):
+                print("Closed Fist detected!")
+                await f.display.show_text("Fist!")
+                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "hand"}')
+
+            
+            else:
+                print("Nothing Detected!")
+                await f.display.show_text("Nothing detected!")
+                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
                 
                 # execute the robot movement using subprocess
                 #ros2_worker.start_ros2_node("unitree_legged_real", "frames_open_palm")
