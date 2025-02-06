@@ -113,30 +113,29 @@ async def check_camera_feed():
             if not recognition_result.gestures:
                 print(f"No gestures detected in photo {i + 1}")
                 await f.display.show_text("Nothing detected!")
-                #ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
+                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
 
                 direction = await f.motion.get_direction()
                 print(f"IMU Reading - Roll: {direction.roll}, Pitch: {direction.pitch}, Heading: {direction.heading}")
                     
-                if direction.roll > 10.0:  # Roll tilt to the right
-                    await f.display.show_text("Leaning Right!")
-                    ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "right"}')
-                    
-                elif direction.roll < -10.0:  # Roll tilt to the left
-                    await f.display.show_text("Leaning Left!")
-                    ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "left"}')
+                #if direction.roll > 10.0:  # Roll tilt to the right
+                #    await f.display.show_text("Leaning Right!")
+                #    ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "right"}')
+                #    
+                #elif direction.roll < -10.0:  # Roll tilt to the left
+                #    await f.display.show_text("Leaning Left!")
+                #    ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "left"}')
 
-                elif direction.pitch > 15.0:  # Pitch tilt forward
-                    await f.display.show_text("Leaning Forward!")
-                    ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "forward"}')
-                
-                elif direction.pitch < -15.0:  # Pitch tilt backward
-                    await f.display.show_text("Leaning Backward!")
-                    ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "back"}')
-
-                else:
-                    await f.display.show_text("Standing Still!")
-                    ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
+                #elif direction.pitch > 15.0:  # Pitch tilt forward
+                #    await f.display.show_text("Leaning Forward!")
+                #    ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "forward"}')
+                #
+                #elif direction.pitch < -15.0:  # Pitch tilt backward
+                #    await f.display.show_text("Leaning Backward!")
+                #    ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "back"}')
+                #else:
+                #    await f.display.show_text("Standing Still!")
+                #    ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
 
 
                 continue
@@ -144,7 +143,7 @@ async def check_camera_feed():
             if not recognition_result.hand_landmarks:
                 print("Nothing Detected!")
                 await f.display.show_text("Nothing detected!")
-                #ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
+                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
 
                 print(f"No hand landmarks detected in photo {i + 1}")
                 continue
