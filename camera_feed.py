@@ -14,6 +14,9 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 from ROS2Controller import ROS2Controller
+from frame_image.TxSprite import TxSprite
+from PIL import Image
+from bleak import BleakError
 
 # Initialize mediapipe gesture recognition
 base_options = python.BaseOptions(model_asset_path='gesture_recognizer.task')
@@ -25,7 +28,79 @@ mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
 
 async def main():
-    await check_camera_feed()
+    #await check_camera_feed()
+    f = Frame()
+    try:
+        await f.ensure_connected()
+    except Exception as e:
+        print(f"An error occurred while connecting to the Frame: {e}")
+        await f.ensure_connected()
+
+    print(f"Connected: {f.bluetooth.is_connected()}")
+    temp_file = "test_photo_0.jpg"
+    await process_and_send_image(f, temp_file)
+
+
+async def send_in_chunks(f, msg_code, payload):
+    """Send a large payload in BLE-compatible chunks."""
+    max_chunk_size = f.bluetooth.max_data_payload() - 5  # Maximum BLE payload size is 240
+    print(f"Max BLE payload size: {max_chunk_size}")
+
+    total_size = len(payload)  # Total size of the payload
+    sent_bytes = 0  # Tracks how many bytes have been sent so far
+    
+    while sent_bytes < total_size:
+        remaining_bytes = total_size - sent_bytes  # Remaining data to send
+        chunk_size = min(max_chunk_size, remaining_bytes)  # Ensure ≤ max_chunk_size
+
+        # Extract the next chunk
+        chunk = payload[sent_bytes : sent_bytes + chunk_size]
+
+        print(f"Sending chunk: {len(chunk)} bytes (offset: {sent_bytes}/{total_size})")
+
+        # Add the msg_code (as the first byte of the packet) to the chunk
+        chunk_with_msg_code = bytearray([msg_code]) + chunk
+
+        # Send the chunk
+        await f.bluetooth.send_data(chunk_with_msg_code)
+        sent_bytes += chunk_size
+
+        # Optional: Small delay to avoid overwhelming BLE
+        await asyncio.sleep(0.01)
+
+    print("All chunks sent successfully!")
+
+
+async def process_and_send_image(f: Frame, image_path: str):
+    """Load a pre-existing image, process it, and send it to Frame in chunks."""
+    
+    print(f"Loading preloaded image: {image_path}")
+
+    #  Load image and convert to indexed color mode (Palette Mode)
+    img = Image.open(image_path).convert("RGB")  # Convert to RGB Mode
+    img = img.convert("P", palette=Image.ADAPTIVE, colors=16)  # Convert to 16 colors
+    img = img.resize((320, 200))  # Optionally resize for Frame compatibility
+    
+    # Save the processed image as PNG (for debugging or testing)
+    processed_image_path = "processed_sprite.png"
+    img.save(processed_image_path)
+    print(f"Image processed and saved as: {processed_image_path}")
+
+    # Pack the image into a TxSprite object
+    sprite = TxSprite(msg_code=0x20, image_path=processed_image_path)
+    packed_data = sprite.pack()
+
+    # Check the size of the packed payload
+    print(f"Packed sprite payload size: {len(packed_data)} bytes")
+
+    # Send the packed data to Frame in chunks
+    try:
+        print("Sending image data in BLE-compatible chunks...")
+        await send_in_chunks(f, sprite.msg_code, packed_data)
+        print("Image successfully sent!")
+    except Exception as e:
+        print(f"Failed to send image: {e}")
+
 
 async def handle_imu_motion_control(frame: Frame, ros_controller: ROS2Controller):
     await frame.motion.run_on_tap(callback=None)
