@@ -1,12 +1,14 @@
 import asyncio
 import cv2
+import glob
 import math
-
-from frame_sdk import Frame
-from frame_sdk.camera import AutofocusType, Quality
-from frame_sdk.display import Alignment
+import os
+import subprocess
+from importlib.resources import files
 
 from matplotlib import pyplot as plt
+
+from PIL import Image, ImageOps
 
 import mediapipe as mp
 from mediapipe.framework.formats import landmark_pb2
@@ -14,9 +16,10 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 from ROS2Controller import ROS2Controller
-from frame_image.TxSprite import TxSprite
-from PIL import Image
-from bleak import BleakError
+
+from frame_ble import FrameBle
+from frame_msg import RxPhoto, TxCaptureSettings, TxSprite, TxImageSpriteBlock
+#from TxSprite import TxSprite
 
 # Initialize mediapipe gesture recognition
 base_options = python.BaseOptions(model_asset_path='gesture_recognizer.task')
@@ -27,28 +30,162 @@ mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
 
+DOG_FRAMES_DIR = "dog_frames"
+
 async def main():
-    #await check_camera_feed()
-    f = Frame()
+    await check_camera_feed()
+
+async def check_camera_feed():
+    frame = FrameBle()
+    
     try:
-        await f.ensure_connected()
+        await frame.connect()
+        await frame.send_break_signal()
+
+        # Let the user know we're starting
+        await frame.send_lua("frame.display.text('Loading...',1,1);frame.display.show();print(1)", await_print=True)
+
+        # debug only: check our current battery level
+        print(f"Battery Level: {await frame.send_lua('print(frame.battery_level())', await_print=True)}")
+
+        # send the std lua files to Frame that handle data accumulation and camera
+        for stdlua in ['data', 'camera', 'image_sprite_block']:
+            await frame.upload_file_from_string(files("frame_msg").joinpath(f"lua/{stdlua}.min.lua").read_text(), f"{stdlua}.min.lua")
+
     except Exception as e:
-        print(f"An error occurred while connecting to the Frame: {e}")
-        await f.ensure_connected()
+        print(f"Error: {e}")
+        
+    # Send the main lua application from this project to Frame that will run the app
+    # to display the text when the messages arrive
+    # We rename the file slightly when we copy it, although it isn't necessary
+    await frame.upload_file("lua/camera_sprite_frame_app.lua", "frame_app.lua")
 
-    print(f"Connected: {f.bluetooth.is_connected()}")
-    temp_file = "test_photo_0.jpg"
-    await process_and_send_image(f, temp_file)
+    # attach the print response handler so we can see stdout from Frame Lua print() statements
+    # If we assigned this handler before the frameside app was running,
+    # any await_print=True commands will echo the acknowledgement byte (e.g. "1"), but if we assign
+    # the handler now we'll see any lua exceptions (or stdout print statements)
+    frame._user_print_response_handler = print
+
+    # "require" the main lua file to run it
+    # Note: we can't await_print here because the require() doesn't return - it has a main loop
+    await frame.send_lua("require('frame_app')", await_print=False)
+
+    # give Frame a moment to start the frameside app,
+    # based on how much work the app does before it's ready to process incoming data
+    await asyncio.sleep(0.5)
+
+    # Now that the Frameside app has started there is no need to send snippets of Lua
+    # code directly (in fact, we would need to send a break_signal if we wanted to because
+    # the main app loop on Frame is running).
+    # From this point we do message-passing with first-class types and send_message() (or send_data())
+    rx_photo = RxPhoto()
+    await rx_photo.start()
+
+    # hook up the RxPhoto receiver
+    frame._user_data_response_handler = rx_photo.handle_data
+
+    # give the frame some time for the autoexposure loop to run (50 times; every 0.1s)
+    await asyncio.sleep(5.0)
+
+    # start the photo capture loop and the ros2 controlling interface
+    running = True  # Variable to control photo capture loop
+    ros_controller = ROS2Controller(workspace_path="~/unitree_ws")
+
+    images = []
+    results = []
+    #await f.display.show_text("Battery level: Checking...", align=Alignment.TOP_RIGHT)
+    #battery_level = await f.get_battery_level()
+    #print(f"Battery level: {battery_level}%")
+    #await f.display.show_text(f"Battery level: {battery_level}%", align=Alignment.TOP_RIGHT)
+
+    i = 0  # Counter for photos
+    while running:  # Keep capturing photos
+        # Request the photo capture
+        capture_settings = TxCaptureSettings(0x0d, resolution=720)
+        await frame.send_message(0x0d, capture_settings.pack())
+
+        # get the jpeg bytes as soon as they're ready
+        jpeg_bytes = await asyncio.wait_for(rx_photo.queue.get(), timeout=10.0)
+        print(f"Received {len(jpeg_bytes)} bytes of jpeg data")
+
+        # save the jpeg bytes to a file
+        photo_filename = f"test_photo_{i}.jpg"
+        with open(photo_filename, "wb") as f:
+            f.write(jpeg_bytes)
+
+        # Load the photo
+        image = mp.Image.create_from_file(photo_filename)
+
+        # Rotate the image
+        recognition_result = recognizer.recognize(image)
+
+        if not recognition_result.gestures:
+            print(f"No gestures detected in photo {i + 1}")
+            #await f.display.show_text("Nothing detected!")
+            ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
+            await display_latest_dog_frame(frame)
+            await asyncio.sleep(1.0)
+            continue
+
+        images.append(image)
+        top_gesture = recognition_result.gestures[0][0]
+        hand_landmarks = recognition_result.hand_landmarks
+        results.append((top_gesture, hand_landmarks))
+
+        # Display the detected gesture
+        #await f.display.show_text(f"{top_gesture.category_name.capitalize()} detected!")
+
+        # Publish to ROS Topic
+        await handle_gesture_command(top_gesture.category_name.lower(), frame, ros_controller)
+
+        # SCP: Transfer from Unitree robot
+        transfer_latest_image_from_robot()
+
+        # Show latest frame in dog_frames
+        await display_latest_dog_frame(frame)
+        await asyncio.sleep(1.0)
+
+        i += 1
+        await asyncio.sleep(0.1)  # Small delay
+
+    # stop the photo handler and clean up resources
+    rx_photo.stop()
+    frame._user_data_response_handler = None
+
+    display_batch_of_images_with_gestures_and_hand_landmarks(images, results)
+
+    await frame.send_break_signal()
+    if frame.is_connected():
+        await frame.disconnect()
+
+# Move this function to handle different gestures
+async def handle_gesture_command(gesture, frame, ros_controller):
+    """Handles the corresponding action based on detected gesture."""
+    GESTURE_COMMANDS = {
+        "thumb_up": "up",
+        "thumb_down": "down",
+        "pointing_up": "forward",
+        "victory": "back",
+        "iloveyou": "right",
+        "open_palm": "left",
+        "closed_fist": "hand"
+    }
+    
+    command = GESTURE_COMMANDS.get(gesture, "none")
+    print(f"Executing command: {command}")
+    #await f.display.show_text(f"Command: {command.capitalize()}!")
+    
+    ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", f'{{data: "{command}"}}')
 
 
-async def send_in_chunks(f, msg_code, payload):
+async def send_in_chunks(frame: FrameBle, msg_code, payload):
     """Send a large payload in BLE-compatible chunks."""
-    max_chunk_size = f.bluetooth.max_data_payload() - 5  # Maximum BLE payload size is 240
+    max_chunk_size = frame.max_data_payload() - 5  # Maximum BLE payload size is 240
     print(f"Max BLE payload size: {max_chunk_size}")
 
     total_size = len(payload)  # Total size of the payload
     sent_bytes = 0  # Tracks how many bytes have been sent so far
-    
+
     while sent_bytes < total_size:
         remaining_bytes = total_size - sent_bytes  # Remaining data to send
         chunk_size = min(max_chunk_size, remaining_bytes)  # Ensure ≤ max_chunk_size
@@ -59,10 +196,14 @@ async def send_in_chunks(f, msg_code, payload):
         print(f"Sending chunk: {len(chunk)} bytes (offset: {sent_bytes}/{total_size})")
 
         # Add the msg_code (as the first byte of the packet) to the chunk
-        chunk_with_msg_code = bytearray([msg_code]) + chunk
+        if sent_bytes == 0:
+            # first packet also has total payload length
+            chunk_with_msg_code = bytearray([msg_code, total_size >> 8, total_size & 0xFF]) + chunk
+        else:
+            chunk_with_msg_code = bytearray([msg_code]) + chunk
 
         # Send the chunk
-        await f.bluetooth.send_data(chunk_with_msg_code)
+        await frame.send_data(chunk_with_msg_code)
         sent_bytes += chunk_size
 
         # Optional: Small delay to avoid overwhelming BLE
@@ -71,228 +212,59 @@ async def send_in_chunks(f, msg_code, payload):
     print("All chunks sent successfully!")
 
 
-async def process_and_send_image(f: Frame, image_path: str):
-    """Load a pre-existing image, process it, and send it to Frame in chunks."""
+# Fetch last captured image from dog_frames
+async def display_latest_dog_frame(f):
+    """Displays the last saved image from the local dog_frames directory."""
+    list_of_files = sorted(glob.glob(f"{DOG_FRAMES_DIR}/*.jpg"), key=os.path.getctime, reverse=True)
     
-    print(f"Loading preloaded image: {image_path}")
-
-    #  Load image and convert to indexed color mode (Palette Mode)
-    img = Image.open(image_path).convert("RGB")  # Convert to RGB Mode
-    img = img.convert("P", palette=Image.ADAPTIVE, colors=16)  # Convert to 16 colors
-    img = img.resize((320, 200))  # Optionally resize for Frame compatibility
+    if list_of_files:
+        latest_file = list_of_files[0]
+        img = Image.open(latest_file)
+        img = ImageOps.exif_transpose(img)  # Automatically correct rotation based on EXIF metadata
+        img = img.convert("RGB")  # Convert to RGB Mode
     
-    # Save the processed image as PNG (for debugging or testing)
-    processed_image_path = "processed_sprite.png"
-    img.save(processed_image_path)
-    print(f"Image processed and saved as: {processed_image_path}")
-
-    # Pack the image into a TxSprite object
-    sprite = TxSprite(msg_code=0x20, image_path=processed_image_path)
-    packed_data = sprite.pack()
-
-    # Check the size of the packed payload
-    print(f"Packed sprite payload size: {len(packed_data)} bytes")
-
-    # Send the packed data to Frame in chunks
-    try:
-        print("Sending image data in BLE-compatible chunks...")
-        await send_in_chunks(f, sprite.msg_code, packed_data)
-        print("Image successfully sent!")
-    except Exception as e:
-        print(f"Failed to send image: {e}")
-
-
-async def handle_imu_motion_control(frame: Frame, ros_controller: ROS2Controller):
-    await frame.motion.run_on_tap(callback=None)
-
-    while True:
-        try:
-            while True:  # Continuously check IMU data
-                try:
-                    direction = await frame.motion.get_direction()
-                    print(f"IMU Reading - Roll: {direction.roll}, Pitch: {direction.pitch}, Heading: {direction.heading}")
-                    
-                    if direction.roll > 10.0:  # Roll tilt to the right
-                        await frame.display.show_text("Leaning Right!")
-                        ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "right"}')
-                    
-                    elif direction.roll < -10.0:  # Roll tilt to the left
-                        await frame.display.show_text("Leaning Left!")
-                        ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "left"}')
+        # Resize the image to fit the Frame's display
+        target_size = (320, 200)
+        img.thumbnail(target_size, Image.LANCZOS)  # Resize while keeping aspect ratio
     
-                    elif direction.pitch > 15.0:  # Pitch tilt forward
-                        await frame.display.show_text("Leaning Forward!")
-                        ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "forward"}')
-                    
-                    elif direction.pitch < -15.0:  # Pitch tilt backward
-                        await frame.display.show_text("Leaning Backward!")
-                        ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "back"}')
+        # Create a blank image (padded background) in the target size
+        padded_img = Image.new("RGB", target_size, (0, 0, 0))  # Black background
+        x_offset = (target_size[0] - img.width) // 2  # Center horizontally
+        y_offset = (target_size[1] - img.height) // 2  # Center vertically
+        padded_img.paste(img, (x_offset, y_offset))  # Paste resized img onto background
     
-                    else:
-                        await frame.display.show_text("Standing Still!")
-                        ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
+        # Convert to indexed color (16-color palette mode)
+        padded_img = padded_img.convert("P", palette=Image.ADAPTIVE, colors=16)
     
-                except Exception as e:
-                    print(f"An error occurred while reading IMU data: {e}")
-                    break  # Exit the loop on repeated failure
-        except Exception as e:
-            print(f"IMU Error: {e}")
-            break
+        # Save processed image for debugging/testing
+        processed_image_path = "processed_sprite.png"
+        padded_img.save(processed_image_path)
+        print(f"Image processed and saved as: {processed_image_path}")
+    
+        # Pack the image into a TxSprite object
+        sprite = TxSprite.from_image_bytes(0x20, padded_img, max_pixels=320 * 200)
+        isb = TxImageSpriteBlock(0x20, sprite, 20)
+        await f.send_message(isb.msg_code, isb.pack())
+        for spr in isb.sprite_lines:
+            await f.send_message(isb.msg_code, spr.pack())
 
-async def check_camera_feed():
-    f = Frame()
-    try:
-        await f.ensure_connected()
-    except Exception as e:
-        print(f"An error occurred while connecting to the Frame: {e}")
-        await f.ensure_connected()
+        print(f"Displaying latest image: {latest_file}")
+    else:
+        print("No images found in dog_frames.")
 
-    print(f"Connected: {f.bluetooth.is_connected()}")
-
-    running = True  # Variable to control photo capture loop
-    ros_controller = ROS2Controller(workspace_path="~/unitree_ws")
-
-    def stop_on_tap():
-        """Callback to stop capturing photos when a tap is detected."""
-        #nonlocal running
-        #running = False
+# SCP Command to fetch latest image from the Unitree robot
+def transfer_latest_image_from_robot():
+    """Transfers the latest image from the robot to `dog_frames/` using SCP."""
+    remote_host = "sayantani@192.168.12.33"
+    remote_dir = "~/david/captured_images/"
+    local_dir = DOG_FRAMES_DIR
 
     try:
-        #ros_controller.start_node("unitree_legged_real", "frames_open_palm")
-        images = []
-        results = []
-        #await f.display.show_text("Tap to start capturing photos", align=Alignment.BOTTOM_CENTER)
-        #await f.motion.wait_for_tap()
-        battery_level = await f.get_battery_level()
-        # Register the tap handler to stop photo capture using `run_on_tap`
-        # This sets up the callback to stop the loop when a tap is detected.
-        await f.motion.run_on_tap(callback=stop_on_tap)
-        print(f"Battery level: {battery_level}%")
-        await f.display.show_text(f"Battery level: {battery_level}%", align=Alignment.TOP_RIGHT)
-        i = 0  # Counter for photos
-        while running:  # Keep capturing photos until the tap handler stops the loop
-            photo_filename = f"test_photo_{i}.jpg"
-            print(f"Capturing photo {i + 1}...")
-
-            # Capture a photo and save it to disk
-            await f.camera.save_photo(photo_filename, autofocus_seconds=1, quality=Quality.HIGH, autofocus_type=AutofocusType.CENTER_WEIGHTED)
-            print(f"Photo {i + 1} saved as {photo_filename}")
-
-            # Load the photo
-            image = mp.Image.create_from_file(photo_filename)
-
-            # Rotate the image by 90 degrees counter-clockwise (if needed)
-            recognition_result = recognizer.recognize(rotate_image(image, angle=90))
-
-            # Check if any gestures or hand landmarks are detected
-            if not recognition_result.gestures:
-                print(f"No gestures detected in photo {i + 1}")
-                await f.display.show_text("Nothing detected!")
-                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
-
-                direction = await f.motion.get_direction()
-                print(f"IMU Reading - Roll: {direction.roll}, Pitch: {direction.pitch}, Heading: {direction.heading}")
-                    
-                #if direction.roll > 10.0:  # Roll tilt to the right
-                #    await f.display.show_text("Leaning Right!")
-                #    ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "right"}')
-                #    
-                #elif direction.roll < -10.0:  # Roll tilt to the left
-                #    await f.display.show_text("Leaning Left!")
-                #    ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "left"}')
-
-                #elif direction.pitch > 15.0:  # Pitch tilt forward
-                #    await f.display.show_text("Leaning Forward!")
-                #    ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "forward"}')
-                #
-                #elif direction.pitch < -15.0:  # Pitch tilt backward
-                #    await f.display.show_text("Leaning Backward!")
-                #    ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "back"}')
-                #else:
-                #    await f.display.show_text("Standing Still!")
-                #    ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
-
-
-                continue
-
-            if not recognition_result.hand_landmarks:
-                print("Nothing Detected!")
-                await f.display.show_text("Nothing detected!")
-                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
-
-                print(f"No hand landmarks detected in photo {i + 1}")
-                continue
-
-            images.append(image)
-            top_gesture = recognition_result.gestures[0][0]
-            hand_landmarks = recognition_result.hand_landmarks
-            results.append((top_gesture, hand_landmarks))
-            print(f"Recognition result for photo {i + 1}: {top_gesture.category_name} ({top_gesture.score:.2f})")
-
-            if (top_gesture.category_name.lower() == "thumb_up"):
-                # invoke the robot to move up with ros2 run unitree_legged_real frames_open_palm
-                print("Thumbs up detected!")
-                await f.display.show_text("Going up!")
-                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "up"}')
-
-            elif (top_gesture.category_name.lower() == "thumb_down"):
-                # invoke the robot to move up with ros2 run unitree_legged_real frames_open_palm
-                print("Thumbs down detected!")
-                await f.display.show_text("Going to sleep!")
-                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "down"}')
-
-            elif (top_gesture.category_name.lower() == "pointing_up"):
-                # invoke the robot to move up with ros2 run unitree_legged_real frames_open_palm
-                print("Pointing up detected!")
-                await f.display.show_text("Going forward!")
-                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "forward"}')
-
-            elif (top_gesture.category_name.lower() == "victory"):
-                # invoke the robot to move up with ros2 run unitree_legged_real frames_open_palm
-                print("Victory detected!")
-                await f.display.show_text("Going back!")
-                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "back"}')
-
-            elif (top_gesture.category_name.lower() == "iloveyou"):
-                print("Open palm detected!")
-                await f.display.show_text("Going right!")
-                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "right"}')
-
-            elif (top_gesture.category_name.lower() == "open_palm"):
-                print("Open palm detected!")
-                await f.display.show_text("Going left!")
-                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "left"}')
-            
-            elif (top_gesture.category_name.lower() == "closed_fist"):
-                print("Closed Fist detected!")
-                await f.display.show_text("Fist!")
-                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "hand"}')
-
-            
-            else:
-                print("Nothing Detected!")
-                await f.display.show_text("Nothing detected!")
-                ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
-                
-                # execute the robot movement using subprocess
-                #ros2_worker.start_ros2_node("unitree_legged_real", "frames_open_palm")
-            # Increment the photo counter
-            i += 1
-
-            # Add a small delay between captures
-            await asyncio.sleep(0.1)
-
-        # Once the user stops capturing photos, display the batch of images with results
-        #ros_controller.kill_node()
-        display_batch_of_images_with_gestures_and_hand_landmarks(images, results)
-        print("Photo capture session completed successfully!")
-
-    except Exception as e:
-        #ros_controller.kill_node()
-        print(f"An error occurred during the photo capture: {e}")
-
-    if f.bluetooth.is_connected():
-        await f.bluetooth.disconnect()
+        # Use SCP to copy the latest file
+        subprocess.run(["scp", f"{remote_host}:{remote_dir}/*.jpg", local_dir], check=True)
+        print("Successfully transferred latest image from Unitree robot.")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to transfer image from robot: {e}")
 
 def display_batch_of_images_with_gestures_and_hand_landmarks(images, results):
     """Displays a batch of images with the gesture category and its score along with the hand landmarks."""
