@@ -31,7 +31,7 @@ mp_drawing_styles = mp.solutions.drawing_styles
 
 DOG_FRAMES_DIR = "dog_frames"
 REMOTE_HOST = "192.168.12.33"  # IP of computer running the camera
-UDP_PORT = "9000"
+HTTP_PORT = "9000"
 
 
 async def main():
@@ -247,18 +247,15 @@ async def display_latest_dog_frame(f):
 
 
 def transfer_latest_image_from_robot():
-    """Transfers the latest image from the robot to `dog_frames/` using UDP."""
-    # Use UDP to copy the latest file
+    """Transfers the latest image from the robot to `dog_frames/` using http."""
+    # Use http to copy the latest file
     try:
-        with open(DOG_FRAMES_DIR, "wb") as outfile:
-            # Use netcat (nc) in UDP mode to connect to the remote server
-            # and write the incoming bytes to outfile
-            subprocess.run(["nc", "-u", REMOTE_HOST, UDP_PORT],
-                           check=True,
-                           stdout=outfile)
-        print(f"Successfully transferred latest image via UDP to {DOG_FRAMES_DIR}.")
+        # use wget to download the latest image from the robot
+        # wget http://192.168.12.33:9000/captured_images/latest.jpg
+        subprocess.run(["wget", f"http://{REMOTE_HOST}:{HTTP_PORT}/captured_images/latest.jpg", "-O", "dog_frames/latest.jpg"])
+        print("Latest image transferred successfully!")
     except subprocess.CalledProcessError as e:
-        print(f"UDP transfer failed: {e}")
+        print(f"HTTP transfer failed: {e}")
 
 
 def display_batch_of_images_with_gestures_and_hand_landmarks(images, results):
