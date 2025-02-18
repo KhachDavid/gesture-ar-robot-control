@@ -31,6 +31,9 @@ mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
 
 DOG_FRAMES_DIR = "dog_frames"
+REMOTE_HOST = "192.168.12.33"   # IP of computer running the camera
+UDP_PORT = "9000"
+
 
 async def main():
     await check_camera_feed()
@@ -241,19 +244,18 @@ async def display_latest_dog_frame(f):
 
 # SCP Command to fetch latest image from the Unitree robot
 def transfer_latest_image_from_robot():
-    """Transfers the latest image from the robot to `dog_frames/` using FTP."""
-    remote_host = "sayantani@192.168.12.33"
-    remote_dir = "~/david/captured_images/"
-    local_dir = DOG_FRAMES_DIR
-
-    #try:
-    #    # Use SCP to copy the latest file
-    #    subprocess.run(["scp", f"{remote_host}:{remote_dir}/*.jpg", local_dir], check=True)
-    #    print("Successfully transferred latest image from Unitree robot.")
-    #except subprocess.CalledProcessError as e:
-    #    print(f"Failed to transfer image from robot: {e}")
-
+    """Transfers the latest image from the robot to `dog_frames/` using UDP."""
     # Use UDP to copy the latest file
+    try:
+        with open(DOG_FRAMES_DIR, "wb") as outfile:
+            # Use netcat (nc) in UDP mode to connect to the remote server
+            # and write the incoming bytes to outfile
+            subprocess.run(["nc", "-u", REMOTE_HOST, UDP_PORT],
+                           check=True,
+                           stdout=outfile)
+        print(f"Successfully transferred latest image via UDP to {DOG_FRAMES_DIR}.")
+    except subprocess.CalledProcessError as e:
+        print(f"UDP transfer failed: {e}")
 
 
 def display_batch_of_images_with_gestures_and_hand_landmarks(images, results):
