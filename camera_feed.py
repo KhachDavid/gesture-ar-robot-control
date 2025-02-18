@@ -103,48 +103,13 @@ async def check_camera_feed():
 
     i = 0  # Counter for photos
     while running:  # Keep capturing photos
-        # Request the photo capture
-        capture_settings = TxCaptureSettings(0x0d, resolution=720)
-        await frame.send_message(0x0d, capture_settings.pack())
+        
+         # Create async tasks for parallel execution
+        task_gesture = asyncio.create_task(capture_and_recognize_gesture(frame, rx_photo, ros_controller, images, results, i))
+        task_dog_frame = asyncio.create_task(fetch_and_display_dog_frame(frame))
 
-        # get the jpeg bytes as soon as they're ready
-        jpeg_bytes = await asyncio.wait_for(rx_photo.queue.get(), timeout=10.0)
-        print(f"Received {len(jpeg_bytes)} bytes of jpeg data")
-
-        # save the jpeg bytes to a file
-        photo_filename = f"test_photo_{i}.jpg"
-        with open(photo_filename, "wb") as f:
-            f.write(jpeg_bytes)
-
-        # Load the photo
-        image = mp.Image.create_from_file(photo_filename)
-
-        # Rotate the image
-        recognition_result = recognizer.recognize(image)
-
-        if not recognition_result.gestures:
-            print(f"No gestures detected in photo {i + 1}")
-            #await f.display.show_text("Nothing detected!")
-            ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
-            await display_latest_dog_frame(frame)
-            continue
-
-        images.append(image)
-        top_gesture = recognition_result.gestures[0][0]
-        hand_landmarks = recognition_result.hand_landmarks
-        results.append((top_gesture, hand_landmarks))
-
-        # Display the detected gesture
-        #await f.display.show_text(f"{top_gesture.category_name.capitalize()} detected!")
-
-        # Publish to ROS Topic
-        await handle_gesture_command(top_gesture.category_name.lower(), frame, ros_controller)
-
-        # UDP: Transfer from Unitree robot
-        transfer_latest_image_from_robot()
-
-        # Show latest frame in dog_frames
-        await display_latest_dog_frame(frame)
+        # Run both tasks in parallel and wait for them both to finish
+        await asyncio.gather(task_gesture, task_dog_frame)
 
         i += 1
         await asyncio.sleep(0.1)  # Small delay
@@ -158,6 +123,55 @@ async def check_camera_feed():
     await frame.send_break_signal()
     if frame.is_connected():
         await frame.disconnect()
+
+
+async def capture_and_recognize_gesture(frame, rx_photo, ros_controller, images, results, i):
+    ########### TASK ONE START ###########
+    # Request the photo capture
+    capture_settings = TxCaptureSettings(0x0d, resolution=720)
+    await frame.send_message(0x0d, capture_settings.pack())
+
+    # get the jpeg bytes as soon as they're ready
+    jpeg_bytes = await asyncio.wait_for(rx_photo.queue.get(), timeout=10.0)
+    print(f"Received {len(jpeg_bytes)} bytes of jpeg data")
+
+    # save the jpeg bytes to a file
+    photo_filename = f"test_photo_{i}.jpg"
+    with open(photo_filename, "wb") as f:
+        f.write(jpeg_bytes)
+
+    # Load the photo
+    image = mp.Image.create_from_file(photo_filename)
+
+    # Rotate the image
+    recognition_result = recognizer.recognize(image)
+
+    if not recognition_result.gestures:
+        print(f"No gestures detected in photo {i + 1}")
+        #await f.display.show_text("Nothing detected!")
+        ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
+        await display_latest_dog_frame(frame)
+        return
+
+    images.append(image)
+    top_gesture = recognition_result.gestures[0][0]
+    hand_landmarks = recognition_result.hand_landmarks
+    results.append((top_gesture, hand_landmarks))
+    ########### TASK ONE END ###########
+
+    # Display the detected gesture
+    #await f.display.show_text(f"{top_gesture.category_name.capitalize()} detected!")
+
+    # Publish to ROS Topic
+    await handle_gesture_command(top_gesture.category_name.lower(), frame, ros_controller)
+
+
+async def fetch_and_display_dog_frame(frame):
+    """Fetches the latest image from the Unitree robot and displays it on Frame."""
+    transfer_latest_image_from_robot()  # Fetch the image
+
+    # Display it on Frame
+    await display_latest_dog_frame(frame)
 
 # Move this function to handle different gestures
 async def handle_gesture_command(gesture, frame, ros_controller):
