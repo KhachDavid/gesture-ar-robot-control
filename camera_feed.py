@@ -33,6 +33,8 @@ DOG_FRAMES_DIR = "dog_frames"
 REMOTE_HOST = "192.168.12.33"  # IP of computer running the camera
 HTTP_PORT = "9000"
 
+photo_event = asyncio.Event()
+photo_event.set()  # Initially "set" means it's OK to display an image  
 
 async def main():
     await check_camera_feed()
@@ -101,7 +103,7 @@ async def check_camera_feed():
         
          # Create async tasks for parallel execution
         task_gesture = asyncio.create_task(capture_and_recognize_gesture(frame, rx_photo, ros_controller, images, results, i))
-        task_dog_frame = asyncio.create_task(fetch_and_display_dog_frame(frame))
+        task_dog_frame = asyncio.create_task(fetch_and_display_dog_frame(frame, ros_controller))
 
         # Run both tasks in parallel and wait for them both to finish
         await asyncio.gather(task_gesture, task_dog_frame)
@@ -121,8 +123,10 @@ async def check_camera_feed():
 
 
 async def capture_and_recognize_gesture(frame, rx_photo, ros_controller, images, results, i):
+    global photo_event  # Use the shared event flag
     ########### TASK ONE START ###########
     # Request the photo capture
+    photo_event.clear()  # Signal that we are taking a photo
     capture_settings = TxCaptureSettings(0x0d, resolution=720)
     await frame.send_message(0x0d, capture_settings.pack())
 
@@ -135,6 +139,9 @@ async def capture_and_recognize_gesture(frame, rx_photo, ros_controller, images,
     with open(photo_filename, "wb") as f:
         f.write(jpeg_bytes)
 
+    # Allow display of dog frame again
+    photo_event.set()  # Signal that we are done with photo capture 
+
     # Load the photo
     image = mp.Image.create_from_file(photo_filename)
 
@@ -144,7 +151,6 @@ async def capture_and_recognize_gesture(frame, rx_photo, ros_controller, images,
     if not recognition_result.gestures:
         print(f"No gestures detected in photo {i + 1}")
         ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
-        await display_latest_dog_frame(frame)
         return
 
     images.append(image)
@@ -157,12 +163,12 @@ async def capture_and_recognize_gesture(frame, rx_photo, ros_controller, images,
     await handle_gesture_command(top_gesture.category_name.lower(), frame, ros_controller)
 
 
-async def fetch_and_display_dog_frame(frame):
+async def fetch_and_display_dog_frame(frame, ros_controller):
     """Fetches the latest image from the Unitree robot and displays it on Frame."""
     transfer_latest_image_from_robot()  # Fetch the image
 
     # Display it on Frame
-    await display_latest_dog_frame(frame)
+    await display_latest_dog_frame(frame, ros_controller)
 
 # Move this function to handle different gestures
 async def handle_gesture_command(gesture, frame, ros_controller):
@@ -217,30 +223,30 @@ async def send_in_chunks(frame: FrameBle, msg_code, payload):
 
 
 # Fetch last captured image from dog_frames
-async def display_latest_dog_frame(f):
+async def display_latest_dog_frame(f, ros_controller):
     """Displays the last saved image from the local dog_frames directory."""
     try:
         # Get a list of all .jpg files in the directory
-        jpg_files = glob.glob(os.path.join(DOG_FRAMES_DIR, "*.jpg"))
+        img = Image.open("/home/david/Frames/gesture-ar-robot-control/dog_frames/latest.jpg")
+        img = ImageOps.exif_transpose(img)  # Automatically correct rotation based on EXIF metadata
 
-        if jpg_files:
-            latest_file = max(jpg_files, key=os.path.getmtime)
-            img = Image.open(latest_file)
-            img = ImageOps.exif_transpose(img)  # Automatically correct rotation based on EXIF metadata
+        # Get the first half of the image's width not the height because it is a stereo image
+        img = img.crop((0, 0, img.width // 2, img.height))
 
-            # Get the first half of the image's width not the height because it is a stereo image
-            img = img.crop((0, 0, img.width // 2, img.height))
+        # Pack the image into a TxSprite object
+        sprite = TxSprite.from_image_bytes(0x20, img, max_pixels=64000)
+        isb = TxImageSpriteBlock(0x20, sprite, 20)
+            
+        global photo_event  # Use the shared event flag
+        await photo_event.wait()  # This suspends execution until photo capture is complete
+        # Wait until it is done taking a photo 
+        ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
+        
+        await f.send_message(isb.msg_code, isb.pack())
+        for spr in isb.sprite_lines:
+            await f.send_message(isb.msg_code, spr.pack())
 
-            # Pack the image into a TxSprite object
-            sprite = TxSprite.from_image_bytes(0x20, img, max_pixels=64000)
-            isb = TxImageSpriteBlock(0x20, sprite, 20)
-            await f.send_message(isb.msg_code, isb.pack())
-            for spr in isb.sprite_lines:
-                await f.send_message(isb.msg_code, spr.pack())
-
-            print(f"Displaying latest image: {latest_file}")
-        else:
-            print("No images found in dog_frames.")
+        print(f"Displaying latest image")
     
     except Exception as e:
         print(f"Error while displaying the image: {e}")
@@ -252,8 +258,13 @@ def transfer_latest_image_from_robot():
     try:
         # use wget to download the latest image from the robot
         # wget http://192.168.12.33:9000/captured_images/latest.jpg
-        subprocess.run(["wget", f"http://{REMOTE_HOST}:{HTTP_PORT}/captured_images/latest.jpg", "-O", "dog_frames/latest.jpg"])
-        print("Latest image transferred successfully!")
+        subprocess.run(["wget", "-q", "-O", f"{DOG_FRAMES_DIR}/latest.jpg", f"http://{REMOTE_HOST}:{HTTP_PORT}/captured_images/latest.jpg"],
+                       check=True)
+
+        # Make sure the file is valid and fully downloaded before proceeding
+        if os.path.getsize(f"{DOG_FRAMES_DIR}/latest.jpg") < 1000:  # File too small = likely incomplete
+            raise ValueError(f"Downloaded image is too small! ({os.path.getsize(f'{DOG_FRAMES_DIR}/latest.jpg')} bytes)")
+
     except subprocess.CalledProcessError as e:
         print(f"HTTP transfer failed: {e}")
 
