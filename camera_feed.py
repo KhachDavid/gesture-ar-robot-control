@@ -124,7 +124,6 @@ async def check_camera_feed():
             #await f.display.show_text("Nothing detected!")
             ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
             await display_latest_dog_frame(frame)
-            await asyncio.sleep(1.0)
             continue
 
         images.append(image)
@@ -143,7 +142,6 @@ async def check_camera_feed():
 
         # Show latest frame in dog_frames
         await display_latest_dog_frame(frame)
-        await asyncio.sleep(1.0)
 
         i += 1
         await asyncio.sleep(0.1)  # Small delay
@@ -215,42 +213,49 @@ async def send_in_chunks(frame: FrameBle, msg_code, payload):
 # Fetch last captured image from dog_frames
 async def display_latest_dog_frame(f):
     """Displays the last saved image from the local dog_frames directory."""
-    list_of_files = sorted(glob.glob(f"{DOG_FRAMES_DIR}/*.jpg"), key=os.path.getctime, reverse=True)
+    try:
+        list_of_files = sorted(glob.glob(f"{DOG_FRAMES_DIR}/*.jpg"), key=os.path.getctime, reverse=True)
     
-    if list_of_files:
-        latest_file = list_of_files[0]
-        img = Image.open(latest_file)
-        img = ImageOps.exif_transpose(img)  # Automatically correct rotation based on EXIF metadata
-        img = img.convert("RGB")  # Convert to RGB Mode
-    
-        # Resize the image to fit the Frame's display
-        target_size = (320, 200)
-        img.thumbnail(target_size, Image.LANCZOS)  # Resize while keeping aspect ratio
-    
-        # Create a blank image (padded background) in the target size
-        padded_img = Image.new("RGB", target_size, (0, 0, 0))  # Black background
-        x_offset = (target_size[0] - img.width) // 2  # Center horizontally
-        y_offset = (target_size[1] - img.height) // 2  # Center vertically
-        padded_img.paste(img, (x_offset, y_offset))  # Paste resized img onto background
-    
-        # Convert to indexed color (16-color palette mode)
-        padded_img = padded_img.convert("P", palette=Image.ADAPTIVE, colors=16)
-    
-        # Save processed image for debugging/testing
-        processed_image_path = "processed_sprite.png"
-        padded_img.save(processed_image_path)
-        print(f"Image processed and saved as: {processed_image_path}")
-    
-        # Pack the image into a TxSprite object
-        sprite = TxSprite.from_image_bytes(0x20, padded_img, max_pixels=320 * 200)
-        isb = TxImageSpriteBlock(0x20, sprite, 20)
-        await f.send_message(isb.msg_code, isb.pack())
-        for spr in isb.sprite_lines:
-            await f.send_message(isb.msg_code, spr.pack())
+        if list_of_files:
+            latest_file = list_of_files[0]
+            img = Image.open(latest_file)
+            img = ImageOps.exif_transpose(img)  # Automatically correct rotation based on EXIF metadata
 
-        print(f"Displaying latest image: {latest_file}")
-    else:
-        print("No images found in dog_frames.")
+            # Get the first half of the image's width not the height because it is a stereo image
+            img = img.crop((0, 0, img.width // 2, img.height))
+            #img = img.convert("RGB")  # Convert to RGB Mode
+
+            # Resize the image to fit the Frame's display
+            #target_size = (320, 200)
+            #img.thumbnail(target_size, Image.LANCZOS)  # Resize while keeping aspect ratio
+
+            # Create a blank image (padded background) in the target size
+            #padded_img = Image.new("RGB", target_size, (0, 0, 0))  # Black background
+            #x_offset = (target_size[0] - img.width) // 2  # Center horizontally
+            #y_offset = (target_size[1] - img.height) // 2  # Center vertically
+            #padded_img.paste(img, (x_offset, y_offset))  # Paste resized img onto background
+    #
+            ## Convert to indexed color (16-color palette mode)
+            #padded_img = padded_img.convert("P", palette=Image.ADAPTIVE, colors=16)
+    #   
+            ## Save processed image for debugging/testing
+            #processed_image_path = "processed_sprite.png"
+            #padded_img.save(processed_image_path)
+            #print(f"Image processed and saved as: {processed_image_path}")
+    
+            # Pack the image into a TxSprite object
+            sprite = TxSprite.from_image_bytes(0x20, img, max_pixels=64000)
+            isb = TxImageSpriteBlock(0x20, sprite, 20)
+            await f.send_message(isb.msg_code, isb.pack())
+            for spr in isb.sprite_lines:
+                await f.send_message(isb.msg_code, spr.pack())
+
+            print(f"Displaying latest image: {latest_file}")
+        else:
+            print("No images found in dog_frames.")
+    
+    except Exception as e:
+        print(f"Error while displaying the image: {e}")
 
 # SCP Command to fetch latest image from the Unitree robot
 def transfer_latest_image_from_robot():
