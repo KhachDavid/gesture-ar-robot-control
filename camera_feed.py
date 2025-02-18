@@ -137,7 +137,7 @@ async def check_camera_feed():
         # Publish to ROS Topic
         await handle_gesture_command(top_gesture.category_name.lower(), frame, ros_controller)
 
-        # SCP: Transfer from Unitree robot
+        # UDP: Transfer from Unitree robot
         transfer_latest_image_from_robot()
 
         # Show latest frame in dog_frames
@@ -214,35 +214,17 @@ async def send_in_chunks(frame: FrameBle, msg_code, payload):
 async def display_latest_dog_frame(f):
     """Displays the last saved image from the local dog_frames directory."""
     try:
-        list_of_files = sorted(glob.glob(f"{DOG_FRAMES_DIR}/*.jpg"), key=os.path.getctime, reverse=True)
-    
-        if list_of_files:
-            latest_file = list_of_files[0]
+        # Get a list of all .jpg files in the directory
+        jpg_files = glob.glob(os.path.join(DOG_FRAMES_DIR, "*.jpg"))
+
+        if jpg_files:
+            latest_file = max(jpg_files, key=os.path.getmtime)
             img = Image.open(latest_file)
             img = ImageOps.exif_transpose(img)  # Automatically correct rotation based on EXIF metadata
 
             # Get the first half of the image's width not the height because it is a stereo image
             img = img.crop((0, 0, img.width // 2, img.height))
-            #img = img.convert("RGB")  # Convert to RGB Mode
 
-            # Resize the image to fit the Frame's display
-            #target_size = (320, 200)
-            #img.thumbnail(target_size, Image.LANCZOS)  # Resize while keeping aspect ratio
-
-            # Create a blank image (padded background) in the target size
-            #padded_img = Image.new("RGB", target_size, (0, 0, 0))  # Black background
-            #x_offset = (target_size[0] - img.width) // 2  # Center horizontally
-            #y_offset = (target_size[1] - img.height) // 2  # Center vertically
-            #padded_img.paste(img, (x_offset, y_offset))  # Paste resized img onto background
-    #
-            ## Convert to indexed color (16-color palette mode)
-            #padded_img = padded_img.convert("P", palette=Image.ADAPTIVE, colors=16)
-    #   
-            ## Save processed image for debugging/testing
-            #processed_image_path = "processed_sprite.png"
-            #padded_img.save(processed_image_path)
-            #print(f"Image processed and saved as: {processed_image_path}")
-    
             # Pack the image into a TxSprite object
             sprite = TxSprite.from_image_bytes(0x20, img, max_pixels=64000)
             isb = TxImageSpriteBlock(0x20, sprite, 20)
@@ -259,17 +241,20 @@ async def display_latest_dog_frame(f):
 
 # SCP Command to fetch latest image from the Unitree robot
 def transfer_latest_image_from_robot():
-    """Transfers the latest image from the robot to `dog_frames/` using SCP."""
+    """Transfers the latest image from the robot to `dog_frames/` using FTP."""
     remote_host = "sayantani@192.168.12.33"
     remote_dir = "~/david/captured_images/"
     local_dir = DOG_FRAMES_DIR
 
-    try:
-        # Use SCP to copy the latest file
-        subprocess.run(["scp", f"{remote_host}:{remote_dir}/*.jpg", local_dir], check=True)
-        print("Successfully transferred latest image from Unitree robot.")
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to transfer image from robot: {e}")
+    #try:
+    #    # Use SCP to copy the latest file
+    #    subprocess.run(["scp", f"{remote_host}:{remote_dir}/*.jpg", local_dir], check=True)
+    #    print("Successfully transferred latest image from Unitree robot.")
+    #except subprocess.CalledProcessError as e:
+    #    print(f"Failed to transfer image from robot: {e}")
+
+    # Use UDP to copy the latest file
+
 
 def display_batch_of_images_with_gestures_and_hand_landmarks(images, results):
     """Displays a batch of images with the gesture category and its score along with the hand landmarks."""
