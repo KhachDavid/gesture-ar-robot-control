@@ -19,7 +19,6 @@ from ROS2Controller import ROS2Controller
 
 from frame_ble import FrameBle
 from frame_msg import RxPhoto, TxCaptureSettings, TxSprite, TxImageSpriteBlock
-#from TxSprite import TxSprite
 
 # Initialize mediapipe gesture recognition
 base_options = python.BaseOptions(model_asset_path='gesture_recognizer.task')
@@ -31,7 +30,7 @@ mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
 
 DOG_FRAMES_DIR = "dog_frames"
-REMOTE_HOST = "192.168.12.33"   # IP of computer running the camera
+REMOTE_HOST = "192.168.12.33"  # IP of computer running the camera
 UDP_PORT = "9000"
 
 
@@ -96,10 +95,6 @@ async def check_camera_feed():
 
     images = []
     results = []
-    #await f.display.show_text("Battery level: Checking...", align=Alignment.TOP_RIGHT)
-    #battery_level = await f.get_battery_level()
-    #print(f"Battery level: {battery_level}%")
-    #await f.display.show_text(f"Battery level: {battery_level}%", align=Alignment.TOP_RIGHT)
 
     i = 0  # Counter for photos
     while running:  # Keep capturing photos
@@ -148,7 +143,6 @@ async def capture_and_recognize_gesture(frame, rx_photo, ros_controller, images,
 
     if not recognition_result.gestures:
         print(f"No gestures detected in photo {i + 1}")
-        #await f.display.show_text("Nothing detected!")
         ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", '{data: "none"}')
         await display_latest_dog_frame(frame)
         return
@@ -158,9 +152,6 @@ async def capture_and_recognize_gesture(frame, rx_photo, ros_controller, images,
     hand_landmarks = recognition_result.hand_landmarks
     results.append((top_gesture, hand_landmarks))
     ########### TASK ONE END ###########
-
-    # Display the detected gesture
-    #await f.display.show_text(f"{top_gesture.category_name.capitalize()} detected!")
 
     # Publish to ROS Topic
     await handle_gesture_command(top_gesture.category_name.lower(), frame, ros_controller)
@@ -188,8 +179,6 @@ async def handle_gesture_command(gesture, frame, ros_controller):
     
     command = GESTURE_COMMANDS.get(gesture, "none")
     print(f"Executing command: {command}")
-    #await f.display.show_text(f"Command: {command.capitalize()}!")
-    
     ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", f'{{data: "{command}"}}')
 
 
@@ -256,7 +245,7 @@ async def display_latest_dog_frame(f):
     except Exception as e:
         print(f"Error while displaying the image: {e}")
 
-# SCP Command to fetch latest image from the Unitree robot
+
 def transfer_latest_image_from_robot():
     """Transfers the latest image from the robot to `dog_frames/` using UDP."""
     # Use UDP to copy the latest file
@@ -321,6 +310,7 @@ def display_batch_of_images_with_gestures_and_hand_landmarks(images, results):
     plt.subplots_adjust(wspace=SPACING, hspace=SPACING)
     plt.show()
 
+
 def display_one_image(image, title, subplot, titlesize=16):
     """Displays one image along with the predicted category name and score."""
     plt.subplot(*subplot)
@@ -328,6 +318,7 @@ def display_one_image(image, title, subplot, titlesize=16):
     if len(title) > 0:
         plt.title(title, fontsize=int(titlesize), color='black', fontdict={'verticalalignment':'center'}, pad=int(titlesize/1.5))
     return (subplot[0], subplot[1], subplot[2]+1)
+
 
 def rotate_image(image, angle):
     """Rotates a given Mediapie image by a specified angle."""
