@@ -9,17 +9,14 @@ from importlib.resources import files
 
 from matplotlib import pyplot as plt
 
-from PIL import Image, ImageOps
+from PIL import Image
 
 import mediapipe as mp
 from mediapipe.framework.formats import landmark_pb2
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
-from ROS2Controller import ROS2Controller
-
-from frame_ble import FrameBle
-from frame_msg import FrameMsg, TxCaptureSettings, TxSprite, TxImageSpriteBlock
+from frame_msg import FrameMsg, TxSprite, TxImageSpriteBlock
 
 # Initialize mediapipe gesture recognition
 base_options = python.BaseOptions(model_asset_path='gesture_recognizer.task')
@@ -67,8 +64,8 @@ async def check_camera_feed():
     # Send the main lua application from this project to Frame that will run the app
     # to display the text when the messages arrive
     # We rename the file slightly when we copy it, although it isn't necessary
-    await frame.upload_file("lua/camera_sprite_frame_app.lua", "frame_app.lua")
-
+    #await frame.upload_file("lua/camera_sprite_frame_app.lua", "frame_app.lua")
+    await frame.upload_file("lua/compressed_prog_sprite_frame_app.lua", "frame_app.lua")
     # attach the print response handler so we can see stdout from Frame Lua print() statements
     # If we assigned this handler before the frameside app was running,
     # any await_print=True commands will echo the acknowledgement byte (e.g. "1"), but if we assign
@@ -102,7 +99,7 @@ async def check_camera_feed():
         await fetch_and_display_dog_frame(frame)
 
         i += 1
-        await asyncio.sleep(0.1)  # Small delay
+        await asyncio.sleep(0.01)  # Small delay
 
     # stop the photo handler and clean up resources
 
@@ -118,58 +115,6 @@ async def fetch_and_display_dog_frame(frame):
     # Display it on Frame
     await display_latest_dog_frame(frame)
 
-# Move this function to handle different gestures
-async def handle_gesture_command(gesture, frame, ros_controller):
-    """Handles the corresponding action based on detected gesture."""
-    GESTURE_COMMANDS = {
-        "thumb_up": "up",
-        "thumb_down": "down",
-        "pointing_up": "forward",
-        "victory": "back",
-        "iloveyou": "right",
-        "open_palm": "left",
-        "closed_fist": "hand"
-    }
-    
-    command = GESTURE_COMMANDS.get(gesture, "none")
-    print(f"Executing command: {command}")
-    ros_controller.publish_to_topic("/active_gesture", "std_msgs/msg/String", f'{{data: "{command}"}}')
-
-
-async def send_in_chunks(frame: FrameBle, msg_code, payload):
-    """Send a large payload in BLE-compatible chunks."""
-    max_chunk_size = frame.max_data_payload() - 5  # Maximum BLE payload size is 240
-    print(f"Max BLE payload size: {max_chunk_size}")
-
-    total_size = len(payload)  # Total size of the payload
-    sent_bytes = 0  # Tracks how many bytes have been sent so far
-
-    while sent_bytes < total_size:
-        remaining_bytes = total_size - sent_bytes  # Remaining data to send
-        chunk_size = min(max_chunk_size, remaining_bytes)  # Ensure ≤ max_chunk_size
-
-        # Extract the next chunk
-        chunk = payload[sent_bytes : sent_bytes + chunk_size]
-
-        print(f"Sending chunk: {len(chunk)} bytes (offset: {sent_bytes}/{total_size})")
-
-        # Add the msg_code (as the first byte of the packet) to the chunk
-        if sent_bytes == 0:
-            # first packet also has total payload length
-            chunk_with_msg_code = bytearray([msg_code, total_size >> 8, total_size & 0xFF]) + chunk
-        else:
-            chunk_with_msg_code = bytearray([msg_code]) + chunk
-
-        # Send the chunk
-        await frame.send_data(chunk_with_msg_code)
-        sent_bytes += chunk_size
-
-        # Optional: Small delay to avoid overwhelming BLE
-        await asyncio.sleep(0.01)
-
-    print("All chunks sent successfully!")
-
-
 # Fetch last captured image from dog_frames
 async def display_latest_dog_frame(f):
     """Displays the last saved image from the local dog_frames directory."""
@@ -179,7 +124,7 @@ async def display_latest_dog_frame(f):
         # Get the first half of the image's width not the height because it is a stereo image
 
         # Pack the image into a TxSprite object
-        sprite = TxSprite.from_image_bytes(img, max_pixels=64000)
+        sprite = TxSprite.from_image_bytes(img, max_pixels=64000, compress=True)
         isb = TxImageSpriteBlock(image=sprite)
         
         await f.send_message(0x20, isb.pack())
@@ -267,30 +212,6 @@ def display_one_image(image, title, subplot, titlesize=16):
     if len(title) > 0:
         plt.title(title, fontsize=int(titlesize), color='black', fontdict={'verticalalignment':'center'}, pad=int(titlesize/1.5))
     return (subplot[0], subplot[1], subplot[2]+1)
-
-
-def rotate_image(image, angle):
-    """Rotates a given Mediapie image by a specified angle."""
-    # If the input image is in the form of a NumPy array, process it directly
-    if image is None:
-        raise ValueError("Input image is None. Please provide a valid image.")
-
-    # Get height and width of mediapipe image
-    h, w, _ = image.numpy_view().shape
-
-    # Compute the center of the image
-    center = (w // 2, h // 2)
-
-    # Create a rotation matrix
-    M = cv2.getRotationMatrix2D(center, angle, scale=1.0)
-
-    # Perform the rotation for mp.Image
-    rotated_image_np = cv2.warpAffine(image.numpy_view(), M, (w, h))
-
-    rotated_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rotated_image_np)
-
-    # Return the rotated image as a NumPy array
-    return rotated_image
 
 
 if __name__ == "__main__":
